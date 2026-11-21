@@ -20,13 +20,20 @@ not a pass. No draw + no CSV = Gate 2 not passed.
 | Item | State |
 | --- | --- |
 | Gate 2 | **Not passed** — no title/plaza draw, no draw-run CSV in any run yet |
-| Latest guest run | 2026-11-21 15:14–15:17 PC time — `boot_20261121_151710.log`, 10,339 lines, exit 0; FSE readNCount fix verified in-run, then abort at the §17 stop |
-| Current blocker | C++ virtual call (vtable+48) in `fn_c9f9aa4` returns NULL → `nn::diag::Abort` — not a zstd error; the `.zs` decompress itself is not yet proven (the abort masks it) |
+| Latest guest run | 2026-11-21 17:32 PC time — `boot_20261121_173222.log`, 10,324 lines, exit 0; weights decode stuck in a repeating pattern, BYML dst still all zeros |
+| Current blocker | FSE decompress loop not advancing — weights sum 170 (should be 510), only 128 nonzero, repeating 8-byte pattern; decompress dst `0x9016e270` all zeros, so BYML validation fails and `fn_d191ec8` aborts. (Correction: there is NO NULL virtual call — `fn_c9f9aa4` is never entered on this path.) |
 | D3D12 half | Built and proven on the real GPU in a separate smoke run (not a Gate 2 pass): `src/runtime/nvn_d3d12.cpp` (new, 12,121 B), 1280x720 window, AMD Radeon RX 5700 XT, swapchain x2, CSV with 60 frames / 60 presents — but draw_calls 0, so present-only, and the NVN API surface on top is not built yet |
 | Build state | Local tree only, `F:\SplatNative` (post-reinstall drive); binary itself is never committed; `main.c` on the build machine is still withheld (same builder-name log string as before), so its repo snapshot stays the older scrubbed copy |
-| Next step | Find why `fn_c9f9aa4`’s virtual call returns NULL; then the heap-name slot writer for `0xe6f3b88`; then the NVN API surface; then a title / plaza draw + CSV in the same run |
+| Next step | Find the decode-loop bug: FSE state update, bitstream refill, or the DTable build itself; then the heap-name slot writer for `0xe6f3b88`; then the NVN API surface; then a title / plaza draw + CSV in the same run |
 
 ## Progress log
+
+### 2026-11-21 ~17:35 PC time — Step 4: no NULL virtual call; decompress still failing, weights stuck
+- Correction to step 3: `fn_c9f9aa4` is never entered on this path (a hook there never fires) — there is no NULL virtual call. The abort is `fn_d191ec8` (BYML loader) failing validation because the decompress destination (`0x9016e270`, 2604 bytes) is all zeros — the decompress never wrote to it.
+- Mask-table fix #1 (`fn_ca273cc`) re-applied and PROVEN correct by a runtime dump (u32 mask table `[0,1,3,7,15,31,...]`, entry[5]=31). Mask fix #2 (`fn_ca27490`, second bit-read site) applied but changes nothing.
+- The weights decode runs but produces wrong values: sum 170 (reference 510), only 128 nonzero, repeating 8-byte pattern — the FSE state/bitstream isn’t advancing. Counts are proven correct and buildDTable returns success, so the fault is in the decode loop, not the table inputs.
+- Next: FSE state update, bitstream refill, or the DTable build itself.
+- Full evidence: `evidence/gate2-step4-2026-11-21.md`.
 
 ### 2026-11-21 ~15:55 PC time — Step 3: FSE readNCount bug fixed and proven, new NULL virtual-call blocker
 - Root cause: the recompiler dropped the `LSL #1` scale — `FSE_readNCount` stored each 16-bit normalized count at a 1-byte stride instead of 2-byte (`build/gen/main_gen_055.c:164863`, `fn_ca26e1c`). Fix: `st16` with `2 * charnum`.
@@ -35,6 +42,7 @@ not a pass. No draw + no CSV = Gate 2 not passed.
 - The run still aborts at the §17 stop, but not on a zstd error: `fn_c9f9aa4` makes a C++ virtual call (vtable+48) that returns NULL, reaching `nn::diag::Abort`. Whether the decompress itself succeeds is not yet proven — the abort masks it.
 - A mask-table scale fix in `fn_ca273cc` (same dropped-scale bug class) was tried and reverted — unproven, abort identical.
 - Full evidence: `evidence/gate2-step3-2026-11-21.md`.
+- **Correction (step 4, 2026-11-21 ~17:35): the NULL virtual-call claim above was wrong — `fn_c9f9aa4` is never entered on this path. The abort is BYML validation on an all-zeros decompress buffer. See the step-4 entry above.**
 
 ### 2026-11-21 ~15:00 PC time — Step 2: §17 root cause — corrupt FSE table, -20 is a symptom
 - The `.zs` heap-def decompression fails with `-20` (`ZSTD_error_srcSize_wrong`) because the guest’s static libzstd builds a corrupt FSE table: the decoded normalized counts were wrong, so the spread position ends at 551 instead of 0 and the Huffman build returns -1. (Step 3 later corrected the numbers: tableLog=5, maxSV=8 were read correctly; only the counts array was corrupt.)
@@ -99,6 +107,7 @@ not a pass. No draw + no CSV = Gate 2 not passed.
 - `evidence/gate2-step1-2026-11-21.md` — step 1: 0x1a80a verified gone on a fresh rebuild
 - `evidence/gate2-step2-2026-11-21.md` — step 2: §17 root cause, corrupt FSE table
 - `evidence/gate2-step3-2026-11-21.md` — step 3: readNCount fix proven, NULL virtual-call blocker
+- `evidence/gate2-step4-2026-11-21.md` — step 4: no NULL virtual call; weights decode stuck
 - `docs/native-gate1/src/runtime/nvn_d3d12.cpp` — new D3D12 presentation layer (device, swapchain, CSV recorder); NVN API surface on top is not built yet
 
 No game files, no keys, no firmware, no titlekeys, no NSO bytes, and no decrypted ExeFS are in this folder. No exe, obj, or generated C is committed. This folder is documentation and evidence only; the runtime source lives in `docs/native-gate1/` until Gate 2 work produces its own source snapshot.
